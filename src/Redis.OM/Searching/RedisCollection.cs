@@ -127,6 +127,18 @@ namespace Redis.OM.Searching
             return (int)_connection.Search<T>(query).DocumentCount > 0;
         }
 
+        /// <summary>
+        /// Checks to see if there is anything.
+        /// </summary>
+        /// <returns>Whether anything was found.</returns>
+        public bool Any()
+        {
+            var expTrue = Expression.IsTrue(Expression.Constant(true));
+            var query = ExpressionTranslator.BuildQueryFromExpression(expTrue, typeof(T), null);
+            query.Limit = new SearchLimit { Number = 0, Offset = 0 };
+            return (int)_connection.Search<T>(query).DocumentCount > 0;
+        }
+
         /// <inheritdoc />
         public void Update(T item)
         {
