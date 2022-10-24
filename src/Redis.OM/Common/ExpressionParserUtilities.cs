@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -35,7 +36,7 @@ namespace Redis.OM.Common
         {
             return exp switch
             {
-                ConstantExpression constExp => constExp.Value.ToString(),
+                ConstantExpression constExp => ValueToString(constExp.Value),
                 MemberExpression member => GetOperandStringForMember(member),
                 MethodCallExpression method when method.Method.Name == "get_Item" =>
                     $"@{((ConstantExpression)method.Arguments[0]).Value}",
@@ -314,7 +315,7 @@ namespace Redis.OM.Common
                     return sb.ToString();
                 }
 
-                return resolved.ToString();
+                return ValueToString(resolved);
             }
 
             if (searchField != null)
@@ -331,9 +332,7 @@ namespace Redis.OM.Common
         {
             return exp switch
             {
-                ConstantExpression constExp => constExp.Type == typeof(string)
-                    ? $"\"{constExp.Value}\""
-                    : $"{constExp.Value}",
+                ConstantExpression constExp => GetConstantStringForArgs(constExp),
                 MemberExpression member => GetOperandStringForMember(member),
                 MethodCallExpression method => $"@{((ConstantExpression)method.Arguments[0]).Value}",
                 UnaryExpression unary => GetOperandString(unary.Operand),
@@ -508,7 +507,7 @@ namespace Redis.OM.Common
                         {
                             if (item is ConstantExpression constant)
                             {
-                                innerArgList.Add(constant.Value.ToString());
+                                innerArgList.Add(GetConstantStringForArgs(constant));
                             }
                         }
 
@@ -598,6 +597,13 @@ namespace Redis.OM.Common
             {
                 var propertyExpression = (MemberExpression)exp.Arguments.Last();
                 var valuesExpression = (MemberExpression)exp.Arguments.First();
+                literal = GetOperandStringForQueryArgs(propertyExpression);
+                if (!literal.StartsWith("@"))
+                {
+                    propertyExpression = (MemberExpression)exp.Arguments.First();
+                    valuesExpression = (MemberExpression)exp.Arguments.Last();
+                }
+
                 var attribute = DetermineSearchAttribute(propertyExpression);
                 if (attribute == null)
                 {
@@ -619,12 +625,12 @@ namespace Redis.OM.Common
 
                 if ((type == typeof(string) || type == typeof(string[]) || type == typeof(List<string>)) && attribute is IndexedAttribute)
                 {
-                    return $"{memberName}:{{{EscapeTagField(literal).Replace("\\|", "|")}}}";
+                    return $"({memberName}:{{{EscapeTagField(literal).Replace("\\|", "|")}}})";
                 }
 
                 if (type == typeof(string) && attribute is SearchableAttribute)
                 {
-                    return $"{memberName}:{literal}";
+                    return $"({memberName}:{literal})";
                 }
 
                 var ret = literal.Replace("|", $"{memberName}:");
@@ -644,10 +650,9 @@ namespace Redis.OM.Common
             }
 
             type = Nullable.GetUnderlyingType(expression.Type) ?? expression.Type;
-
             memberName = GetOperandStringForMember(expression);
             literal = GetOperandStringForQueryArgs(exp.Arguments.Last());
-            return (type == typeof(string)) ? $"{memberName}:{literal}" : $"{memberName}:{{{EscapeTagField(literal)}}}";
+            return (type == typeof(string)) ? $"({memberName}:{literal})" : $"({memberName}:{{{EscapeTagField(literal)}}})";
         }
 
         private static string TranslateAnyForEmbeddedObjects(MethodCallExpression exp)
@@ -657,6 +662,30 @@ namespace Redis.OM.Common
             var lambda = (LambdaExpression)exp.Arguments.Last();
             var tempQuery = ExpressionTranslator.TranslateBinaryExpression((BinaryExpression)lambda.Body);
             return tempQuery.Replace("@", $"{prefix}_");
+        }
+
+        private static string ValueToString(object value)
+        {
+            Type valueType = value.GetType();
+
+            if (valueType == typeof(double) || Nullable.GetUnderlyingType(valueType) == typeof(double))
+            {
+                return ((double)value).ToString(CultureInfo.InvariantCulture);
+            }
+
+            return value.ToString();
+        }
+
+        private static string GetConstantStringForArgs(ConstantExpression constExp)
+        {
+            string valueAsString = ValueToString(constExp.Value);
+
+            if (constExp.Type == typeof(string))
+            {
+                return $"\"{valueAsString}\"";
+            }
+
+            return $"{valueAsString}";
         }
     }
 }

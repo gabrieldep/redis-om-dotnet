@@ -31,6 +31,18 @@ namespace Redis.OM.Searching
         /// <param name="connection">Connection to Redis.</param>
         /// <param name="chunkSize">Size of chunks to pull back during pagination, defaults to 100.</param>
         public RedisCollection(IRedisConnection connection, int chunkSize = 100)
+            : this(connection, true, chunkSize)
+        {
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="RedisCollection{T}"/> class.
+        /// </summary>
+        /// <param name="saveState">Determines whether or not the Redis Colleciton will maintain it's state internally.</param>
+        /// <param name="connection">Connection to Redis.</param>
+        /// <param name="chunkSize">Size of chunks to pull back during pagination, defaults to 100.</param>
+        /// <exception cref="ArgumentException">Thrown if the root attribute of the Redis Colleciton is not decorated with a DocumentAttribute.</exception>
+        public RedisCollection(IRedisConnection connection, bool saveState, int chunkSize)
         {
             var t = typeof(T);
             DocumentAttribute rootAttribute = t.GetCustomAttribute<DocumentAttribute>();
@@ -41,8 +53,9 @@ namespace Redis.OM.Searching
 
             ChunkSize = chunkSize;
             _connection = connection;
+            SaveState = saveState;
             StateManager = new RedisCollectionStateManager(rootAttribute);
-            Initialize(new RedisQueryProvider(connection, StateManager, rootAttribute, ChunkSize), null, null);
+            Initialize(new RedisQueryProvider(connection, StateManager, rootAttribute, ChunkSize, SaveState), null, null);
         }
 
         /// <summary>
@@ -51,13 +64,15 @@ namespace Redis.OM.Searching
         /// <param name="provider">Query Provider.</param>
         /// <param name="expression">Expression to be parsed for the query.</param>
         /// <param name="stateManager">Manager of the internal state of the collection.</param>
+        /// <param name="saveState">Whether or not the StateManager will maintain the state.</param>
         /// <param name="chunkSize">Size of chunks to pull back during pagination, defaults to 100.</param>
         /// <param name="booleanExpression">The expression to build the filter from.</param>
-        internal RedisCollection(RedisQueryProvider provider, Expression expression, RedisCollectionStateManager stateManager, Expression<Func<T, bool>>? booleanExpression, int chunkSize = 100)
+        internal RedisCollection(RedisQueryProvider provider, Expression expression, RedisCollectionStateManager stateManager, Expression<Func<T, bool>>? booleanExpression, bool saveState, int chunkSize = 100)
         {
             StateManager = stateManager;
             _connection = provider.Connection;
             ChunkSize = chunkSize;
+            SaveState = saveState;
             Initialize(provider, expression, booleanExpression);
         }
 
@@ -69,6 +84,9 @@ namespace Redis.OM.Searching
 
         /// <inheritdoc/>
         public IQueryProvider Provider { get; private set; } = default!;
+
+        /// <inheritdoc />
+        public bool SaveState { get; }
 
         /// <summary>
         /// Gets manages the state of the items queried from Redis.
@@ -134,8 +152,7 @@ namespace Redis.OM.Searching
                 _connection.UnlinkAndSet(key, item, StateManager.DocumentAttribute.StorageType);
             }
 
-            StateManager.InsertIntoSnapshot(key, item);
-            StateManager.InsertIntoData(key, item);
+            SaveToStateManager(key, item);
         }
 
         /// <inheritdoc />
@@ -163,8 +180,7 @@ namespace Redis.OM.Searching
                 await _connection.UnlinkAndSetAsync(key, item, StateManager.DocumentAttribute.StorageType);
             }
 
-            StateManager.InsertIntoSnapshot(key, item);
-            StateManager.InsertIntoData(key, item);
+            SaveToStateManager(key, item);
         }
 
         /// <inheritdoc />
@@ -238,8 +254,7 @@ namespace Redis.OM.Searching
             query.Limit = new SearchLimit { Number = 1, Offset = 0 };
             var res = await _connection.SearchAsync<T>(query);
             var result = res.Documents.First();
-            StateManager.InsertIntoData(result.Key, result.Value);
-            StateManager.InsertIntoSnapshot(result.Key, result.Value);
+            SaveToStateManager(result.Key, result.Value);
             return result.Value;
         }
 
@@ -252,8 +267,7 @@ namespace Redis.OM.Searching
             query.Limit = new SearchLimit { Number = 1, Offset = 0 };
             var res = await _connection.SearchAsync<T>(query);
             var result = res.Documents.First();
-            StateManager.InsertIntoData(result.Key, result.Value);
-            StateManager.InsertIntoSnapshot(result.Key, result.Value);
+            SaveToStateManager(result.Key, result.Value);
             return result.Value;
         }
 
@@ -270,8 +284,7 @@ namespace Redis.OM.Searching
             }
 
             var result = res.Documents[key];
-            StateManager.InsertIntoData(key, result);
-            StateManager.InsertIntoSnapshot(key, result);
+            SaveToStateManager(key, result);
             return result;
         }
 
@@ -290,8 +303,7 @@ namespace Redis.OM.Searching
             }
 
             var result = res.Documents[key];
-            StateManager.InsertIntoData(key, result);
-            StateManager.InsertIntoSnapshot(key, result);
+            SaveToStateManager(key, result);
             return result;
         }
 
@@ -308,8 +320,7 @@ namespace Redis.OM.Searching
 
             var key = res.Documents.Keys.Single();
             var result = res.Documents[key];
-            StateManager.InsertIntoData(key, result);
-            StateManager.InsertIntoSnapshot(key, result);
+            SaveToStateManager(key, result);
             return result;
         }
 
@@ -328,8 +339,7 @@ namespace Redis.OM.Searching
 
             var key = res.Documents.Keys.Single();
             var result = res.Documents[key];
-            StateManager.InsertIntoData(key, result);
-            StateManager.InsertIntoSnapshot(key, result);
+            SaveToStateManager(key, result);
             return result;
         }
 
@@ -348,8 +358,7 @@ namespace Redis.OM.Searching
             if (key != default)
             {
                 var result = res.Documents[key];
-                StateManager.InsertIntoData(key, result);
-                StateManager.InsertIntoSnapshot(key, result);
+                SaveToStateManager(key, result);
                 return result;
             }
 
@@ -373,8 +382,7 @@ namespace Redis.OM.Searching
             if (key != null)
             {
                 var result = res.Documents[key];
-                StateManager.InsertIntoData(key, result);
-                StateManager.InsertIntoSnapshot(key, result);
+                SaveToStateManager(key, result);
                 return result;
             }
 
@@ -400,8 +408,7 @@ namespace Redis.OM.Searching
             query.Limit = new SearchLimit { Number = 1, Offset = 0 };
             var res = _connection.Search<T>(query);
             var result = res.Documents.First();
-            StateManager.InsertIntoData(result.Key, result.Value);
-            StateManager.InsertIntoSnapshot(result.Key, result.Value);
+            SaveToStateManager(result.Key, result.Value);
             return result.Value;
         }
 
@@ -414,8 +421,7 @@ namespace Redis.OM.Searching
             query.Limit = new SearchLimit { Number = 1, Offset = 0 };
             var res = _connection.Search<T>(query);
             var result = res.Documents.FirstOrDefault();
-            StateManager.InsertIntoData(result.Key, result.Value);
-            StateManager.InsertIntoSnapshot(result.Key, result.Value);
+            SaveToStateManager(result.Key, result.Value);
             return result.Value;
         }
 
@@ -433,8 +439,7 @@ namespace Redis.OM.Searching
             }
 
             var result = res.Documents.Single();
-            StateManager.InsertIntoData(result.Key, result.Value);
-            StateManager.InsertIntoSnapshot(result.Key, result.Value);
+            SaveToStateManager(result.Key, result.Value);
             return result.Value;
         }
 
@@ -452,8 +457,7 @@ namespace Redis.OM.Searching
             }
 
             var result = res.Documents.SingleOrDefault();
-            StateManager.InsertIntoData(result.Key, result.Value);
-            StateManager.InsertIntoSnapshot(result.Key, result.Value);
+            SaveToStateManager(result.Key, result.Value);
             return result.Value;
         }
 
@@ -461,7 +465,7 @@ namespace Redis.OM.Searching
         public async Task<IDictionary<string, T?>> FindByIdsAsync(IEnumerable<string> ids)
         {
             var tasks = new Dictionary<string, Task<T?>>();
-            foreach (var id in ids)
+            foreach (var id in ids.Distinct())
             {
                 tasks.Add(id, FindByIdAsync(id));
             }
@@ -472,8 +476,7 @@ namespace Redis.OM.Searching
             {
                 if (res.Value != null)
                 {
-                    StateManager.InsertIntoData(res.Value.GetKey(), res.Value);
-                    StateManager.InsertIntoSnapshot(res.Value.GetKey(), res.Value);
+                    SaveToStateManager(res.Value.GetKey(), res.Value);
                 }
             }
 
@@ -484,7 +487,7 @@ namespace Redis.OM.Searching
         public IEnumerator<T> GetEnumerator()
         {
             StateManager.Clear();
-            return new RedisCollectionEnumerator<T>(Expression, _connection, ChunkSize, StateManager, BooleanExpression);
+            return new RedisCollectionEnumerator<T>(Expression, _connection, ChunkSize, StateManager, BooleanExpression, SaveState);
         }
 
         /// <inheritdoc/>
@@ -496,6 +499,14 @@ namespace Redis.OM.Searching
         /// <inheritdoc/>
         public void Save()
         {
+            if (!SaveState)
+            {
+                throw new InvalidOperationException(
+                    "The RedisCollection has been instructed to not maintain the state of records enumerated by " +
+                    "Redis making the attempt to Save Invalid. Please initialize the RedisCollection with saveState " +
+                    "set to true to Save documents in the RedisCollection");
+            }
+
             var diff = StateManager.DetectDifferences();
             foreach (var item in diff)
             {
@@ -516,6 +527,14 @@ namespace Redis.OM.Searching
         /// <inheritdoc/>
         public async ValueTask SaveAsync()
         {
+            if (!SaveState)
+            {
+                throw new InvalidOperationException(
+                    "The RedisCollection has been instructed to not maintain the state of records enumerated by " +
+                    "Redis making the attempt to Save Invalid. Please initialize the RedisCollection with saveState " +
+                    "set to true to Save documents in the RedisCollection");
+            }
+
             var diff = StateManager.DetectDifferences();
             var tasks = new List<Task<int?>>();
             foreach (var item in diff)
@@ -573,8 +592,7 @@ namespace Redis.OM.Searching
             var result = _connection.Get<T>(key);
             if (result != null)
             {
-                StateManager.InsertIntoData(key, result);
-                StateManager.InsertIntoSnapshot(key, result);
+                SaveToStateManager(key, result);
             }
 
             return result;
@@ -588,8 +606,7 @@ namespace Redis.OM.Searching
             var result = await _connection.GetAsync<T>(key);
             if (result != null)
             {
-                StateManager.InsertIntoData(key, result);
-                StateManager.InsertIntoSnapshot(key, result);
+                SaveToStateManager(key, result);
             }
 
             return result;
@@ -600,7 +617,7 @@ namespace Redis.OM.Searching
         {
             var provider = (RedisQueryProvider)Provider;
             StateManager.Clear();
-            return new RedisCollectionEnumerator<T>(Expression, provider.Connection, ChunkSize, StateManager, BooleanExpression);
+            return new RedisCollectionEnumerator<T>(Expression, provider.Connection, ChunkSize, StateManager, BooleanExpression, SaveState);
         }
 
         private static MethodInfo GetMethodInfo<T1, T2>(Func<T1, T2> f, T1 unused)
@@ -618,6 +635,25 @@ namespace Redis.OM.Searching
             Provider = provider ?? throw new ArgumentNullException(nameof(provider));
             Expression = expression ?? Expression.Constant(this);
             BooleanExpression = booleanExpression;
+        }
+
+        private void SaveToStateManager(string key, object value)
+        {
+            if (SaveState)
+            {
+                try
+                {
+                    StateManager.InsertIntoData(key, value);
+                    StateManager.InsertIntoSnapshot(key, value);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    throw new Exception(
+                        "Exception encountered while trying to save State. This indicates a possible race condition. " +
+                        "If you do not need to update, consider setting SaveState to false, otherwise, ensure collection is only enumerated on one thread at a time",
+                        ex);
+                }
+            }
         }
     }
 }
