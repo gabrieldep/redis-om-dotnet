@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Redis.OM.Common;
@@ -113,6 +114,14 @@ namespace Redis.OM.Searching
             }
         }
 
+        /// <inheritdoc />
+        public bool Any()
+        {
+            var query = ExpressionTranslator.BuildQueryFromExpression(Expression, typeof(T), BooleanExpression);
+            query.Limit = new SearchLimit { Number = 0, Offset = 0 };
+            return (int)_connection.Search<T>(query).DocumentCount > 0;
+        }
+
         /// <summary>
         /// Checks to see if anything matching the expression exists.
         /// </summary>
@@ -196,6 +205,18 @@ namespace Redis.OM.Searching
         }
 
         /// <inheritdoc />
+        public async ValueTask UpdateAsync(IEnumerable<T> items)
+        {
+            var tasks = items.Select(UpdateAsyncNoSave);
+
+            await Task.WhenAll(tasks);
+            foreach (var kvp in tasks.Select(x => x.Result))
+            {
+                SaveToStateManager(kvp.Key, kvp.Value);
+            }
+        }
+
+        /// <inheritdoc />
         public void Delete(T item)
         {
             var key = item.GetKey();
@@ -204,11 +225,45 @@ namespace Redis.OM.Searching
         }
 
         /// <inheritdoc />
+        public void Delete(IEnumerable<T> items)
+        {
+            var keys = items.Select(x => x.GetKey()).ToArray();
+            if (!keys.Any())
+            {
+                return;
+            }
+
+            foreach (var key in keys)
+            {
+                StateManager.Remove(key);
+            }
+
+            _connection.Unlink(keys);
+        }
+
+        /// <inheritdoc />
         public async Task DeleteAsync(T item)
         {
             var key = item.GetKey();
             await _connection.UnlinkAsync(key);
             StateManager.Remove(key);
+        }
+
+        /// <inheritdoc />
+        public async Task DeleteAsync(IEnumerable<T> items)
+        {
+            var keys = items.Select(x => x.GetKey()).ToArray();
+            if (!keys.Any())
+            {
+                return;
+            }
+
+            foreach (var key in keys)
+            {
+                StateManager.Remove(key);
+            }
+
+            await _connection.UnlinkAsync(keys);
         }
 
         /// <inheritdoc />
@@ -479,16 +534,17 @@ namespace Redis.OM.Searching
             var tasks = new Dictionary<string, Task<T?>>();
             foreach (var id in ids.Distinct())
             {
-                tasks.Add(id, FindByIdAsync(id));
+                tasks.Add(id, FindByIdAsyncNoSave(id));
             }
 
             await Task.WhenAll(tasks.Values);
             var result = tasks.ToDictionary(x => x.Key, x => x.Value.Result);
             foreach (var res in result)
             {
-                if (res.Value != null)
+                string? key;
+                if (res.Value != null && res.Value.TryGetKey(out key) && key != null)
                 {
-                    SaveToStateManager(res.Value.GetKey(), res.Value);
+                    SaveToStateManager((string)key, res.Value);
                 }
             }
 
@@ -597,6 +653,56 @@ namespace Redis.OM.Searching
         }
 
         /// <inheritdoc/>
+        public Task<string?> InsertAsync(T item, WhenKey when, TimeSpan? timeSpan = null)
+        {
+            return ((RedisQueryProvider)Provider).Connection.SetAsync(item, when, timeSpan);
+        }
+
+        /// <inheritdoc/>
+        public string? Insert(T item, WhenKey when, TimeSpan? timeSpan = null)
+        {
+            return ((RedisQueryProvider)Provider).Connection.Set(item, when, timeSpan);
+        }
+
+        /// <inheritdoc/>
+        public async Task<List<string>> Insert(IEnumerable<T> items)
+        {
+            var distinct = items.Distinct().ToArray();
+            if (!distinct.Any())
+            {
+                return new List<string>();
+            }
+
+            var tasks = new List<Task<string>>();
+            foreach (var item in distinct)
+            {
+                tasks.Add(((RedisQueryProvider)Provider).Connection.SetAsync(item));
+            }
+
+            var result = await Task.WhenAll(tasks);
+            return result.ToList();
+        }
+
+        /// <inheritdoc/>
+        public async Task<List<string>> Insert(IEnumerable<T> items, TimeSpan timeSpan)
+        {
+            var distinct = items.Distinct().ToArray();
+            if (!distinct.Any())
+            {
+                return new List<string>();
+            }
+
+            var tasks = new List<Task<string>>();
+            foreach (var item in distinct)
+            {
+                tasks.Add(((RedisQueryProvider)Provider).Connection.SetAsync(item, timeSpan));
+            }
+
+            var result = await Task.WhenAll(tasks);
+            return result.ToList();
+        }
+
+        /// <inheritdoc/>
         public T? FindById(string id)
         {
             var prefix = typeof(T).GetKeyPrefix();
@@ -635,6 +741,40 @@ namespace Redis.OM.Searching
         private static MethodInfo GetMethodInfo<T1, T2>(Func<T1, T2> f, T1 unused)
         {
             return f.Method;
+        }
+
+        private Task<T?> FindByIdAsyncNoSave(string id)
+        {
+            var prefix = typeof(T).GetKeyPrefix();
+            string key = id.Contains(prefix) ? id : $"{prefix}:{id}";
+            return _connection.GetAsync<T>(key).AsTask();
+        }
+
+        private async Task<KeyValuePair<string, T>> UpdateAsyncNoSave(T item)
+        {
+            var key = item.GetKey();
+            IList<IObjectDiff>? diff;
+            var diffConstructed = StateManager.TryDetectDifferencesSingle(key, item, out diff);
+            if (diffConstructed)
+            {
+                if (diff!.Any())
+                {
+                    var args = new List<string>();
+                    var scriptName = diff!.First().Script;
+                    foreach (var update in diff!)
+                    {
+                        args.AddRange(update.SerializeScriptArgs());
+                    }
+
+                    await _connection.CreateAndEvalAsync(scriptName, new[] { key }, args.ToArray());
+                }
+            }
+            else
+            {
+                await _connection.UnlinkAndSetAsync(key, item, StateManager.DocumentAttribute.StorageType);
+            }
+
+            return new KeyValuePair<string, T>(key, item);
         }
 
         private void Initialize(RedisQueryProvider provider, Expression? expression, Expression<Func<T, bool>>? booleanExpression)

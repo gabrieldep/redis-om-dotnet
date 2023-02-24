@@ -2,6 +2,7 @@
 using System;
 using Redis.OM.Unit.Tests.RediSearchTests;
 using Xunit;
+using static Redis.OM.Unit.Tests.SearchJsonTests.RedisJsonNestedComposeValueTest;
 
 namespace Redis.OM.Unit.Tests
 {
@@ -22,6 +23,9 @@ namespace Redis.OM.Unit.Tests
             Connection.CreateIndex(typeof(ObjectWithEmbeddedArrayOfObjects));
             Connection.CreateIndex(typeof(ObjectWithZeroStopwords));
             Connection.CreateIndex(typeof(ObjectWithTwoStopwords));
+            Connection.CreateIndex(typeof(ObjectWithDateTime));
+            Connection.CreateIndex(typeof(ObjectWithDateTimeHash));
+            Connection.CreateIndex(typeof(PersonWithNestedArrayOfObject));
         }
 
         private IRedisConnection _connection = null;
@@ -53,6 +57,9 @@ namespace Redis.OM.Unit.Tests
             Connection.DropIndexAndAssociatedRecords(typeof(ObjectWithZeroStopwords));
             Connection.DropIndexAndAssociatedRecords(typeof(ObjectWithTwoStopwords));
             Connection.DropIndexAndAssociatedRecords(typeof(ClassForEmptyRedisCollection));
+            Connection.DropIndexAndAssociatedRecords(typeof(ObjectWithDateTime));
+            Connection.DropIndexAndAssociatedRecords(typeof(ObjectWithDateTimeHash));
+            Connection.DropIndexAndAssociatedRecords(typeof(PersonWithNestedArrayOfObject));
         }
     }
 }

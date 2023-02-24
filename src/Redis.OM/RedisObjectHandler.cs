@@ -17,8 +17,6 @@ namespace Redis.OM
     /// </summary>
     internal static class RedisObjectHandler
     {
-        private static readonly JsonSerializerOptions JsonSerializerOptions = new ();
-
         private static readonly Dictionary<Type, object?> TypeDefaultCache = new ()
         {
             { typeof(string), null },
@@ -29,12 +27,6 @@ namespace Redis.OM
             { typeof(uint), default(uint) },
             { typeof(ulong), default(ulong) },
         };
-
-        static RedisObjectHandler()
-        {
-            JsonSerializerOptions.Converters.Add(new GeoLocJsonConverter());
-            JsonSerializerOptions.Converters.Add(new DateTimeJsonConverter());
-        }
 
         /// <summary>
         /// Builds object from provided hash set.
@@ -64,7 +56,7 @@ namespace Redis.OM
                 asJson = SendToJson(hash, typeof(T));
             }
 
-            return JsonSerializer.Deserialize<T>(asJson, JsonSerializerOptions) ?? throw new Exception("Deserialization fail");
+            return JsonSerializer.Deserialize<T>(asJson, RedisSerializationSettings.JsonSerializerOptions) ?? throw new Exception("Deserialization fail");
         }
 
         /// <summary>
@@ -99,7 +91,7 @@ namespace Redis.OM
                 throw new ArgumentException("Type must be decorated with a DocumentAttribute");
             }
 
-            return JsonSerializer.Deserialize<T>(asJson, JsonSerializerOptions) ?? throw new Exception("Deserialization fail");
+            return JsonSerializer.Deserialize<T>(asJson, RedisSerializationSettings.JsonSerializerOptions) ?? throw new Exception("Deserialization fail");
         }
 
         /// <summary>
@@ -158,6 +150,37 @@ namespace Redis.OM
             sb.Append(id);
 
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Attempts to pull the key out of the object, returns false if it fails.
+        /// </summary>
+        /// <param name="obj">The object to pull the key out of.</param>
+        /// <param name="key">The key out param.</param>
+        /// <returns>True of a key was parsed, false if not.</returns>
+        internal static bool TryGetKey(this object obj, out string? key)
+        {
+            key = null;
+            var type = obj.GetType();
+            var documentAttribute = type.GetCustomAttribute(typeof(DocumentAttribute)) as DocumentAttribute;
+
+            if (documentAttribute == null)
+            {
+                return false;
+            }
+
+            var id = obj.GetId();
+            if (string.IsNullOrEmpty(id))
+            {
+                return false;
+            }
+
+            var sb = new StringBuilder();
+            sb.Append(GetKeyPrefix(type));
+            sb.Append(":");
+            sb.Append(id);
+            key = sb.ToString();
+            return true;
         }
 
         /// <summary>
@@ -231,7 +254,7 @@ namespace Redis.OM
                     }
                     else
                     {
-                        idProperty.SetValue(obj, id);
+                        idProperty.SetValue(obj, Convert.ChangeType(id, idProperty.PropertyType));
                     }
                 }
             }
